@@ -1,0 +1,12 @@
+{
+  "mcpServers": {
+    "godot": {
+      "command": "gopeak",
+      "args": [],
+      "env": {
+        "GODOT_PATH": "C:\\Program Files\\Godot\\Godot_v4.x.exe",
+        "GOPEAK_TOOL_PROFILE": "compact"
+      }
+    }
+  }
+}
