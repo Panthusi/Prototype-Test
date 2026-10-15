@@ -11,6 +11,19 @@ signal boosted_status_changed(is_boosted: bool, factor: float)
 signal grenade_thrown(grenade: Node3D)
 signal dodge_started(direction: Vector3)
 signal dodge_finished()
+signal health_changed(current: float, max_health: float)
+signal died()
+
+@export_group("Health Settings")
+## Maximum health points of the player
+@export var max_health: float = 100.0:
+	set(val):
+		max_health = maxf(val, 1.0)
+		current_health = minf(current_health, max_health)
+## Current health points of the player
+@export var current_health: float = 100.0:
+	set(val):
+		current_health = clampf(val, 0.0, max_health)
 
 @export_group("Movement Settings")
 ## Maximum walking speed on the plane
@@ -120,9 +133,20 @@ var _visor_material: StandardMaterial3D
 
 
 func _ready() -> void:
+	add_to_group("player")
+	add_to_group("damageable")
 	_setup_slash_visual()
 	_setup_visor_visual()
 	_find_ground()
+
+	var health_bar: HealthBar3D = get_node_or_null("HealthBar3D") as HealthBar3D
+	if health_bar:
+		health_bar.fill_color = Color(0.2, 0.85, 0.35, 1.0)
+		health_bar.label_text = "Player"
+		health_bar.update_health(current_health, max_health)
+		health_changed.connect(func(cur: float, max_hp: float):
+			health_bar.update_health(cur, max_hp)
+		)
 
 
 # ==============================================================================
@@ -179,6 +203,59 @@ func teleport(target_pos: Vector3) -> void:
 	stop()
 	global_position = target_pos
 	position_changed.emit(global_position)
+
+
+## Take damage from attacks or hazards
+func take_damage(amount: float, _source: Node3D = null) -> void:
+	if current_health <= 0.0:
+		return
+
+	current_health = clampf(current_health - amount, 0.0, max_health)
+	health_changed.emit(current_health, max_health)
+	_play_hurt_feedback()
+
+	if current_health <= 0.0:
+		died.emit()
+		_on_death()
+
+
+## Restore health points
+func heal(amount: float) -> void:
+	if current_health <= 0.0:
+		return
+	current_health = clampf(current_health + amount, 0.0, max_health)
+	health_changed.emit(current_health, max_health)
+
+
+func _on_death() -> void:
+	# Auto-restore player after 3 seconds for continuous playtesting
+	get_tree().create_timer(3.0).timeout.connect(func():
+		if current_health <= 0.0:
+			current_health = max_health
+			health_changed.emit(current_health, max_health)
+	)
+
+
+func _play_hurt_feedback() -> void:
+	var body_mesh := get_node_or_null("MeshInstance3D") as MeshInstance3D
+	if body_mesh:
+		var flash_mat := StandardMaterial3D.new()
+		flash_mat.albedo_color = Color(1.0, 0.2, 0.2, 1.0)
+		flash_mat.emission_enabled = true
+		flash_mat.emission = Color(1.0, 0.1, 0.1)
+		flash_mat.emission_energy_multiplier = 2.0
+		body_mesh.material_override = flash_mat
+
+		var tween := create_tween()
+		tween.tween_interval(0.12)
+		tween.tween_callback(func():
+			if body_mesh:
+				body_mesh.material_override = null
+		)
+
+		var wobble := create_tween()
+		wobble.tween_property(body_mesh, "scale", Vector3(1.2, 0.8, 1.2), 0.08)
+		wobble.tween_property(body_mesh, "scale", Vector3.ONE, 0.15).set_trans(Tween.TRANS_BACK).set_ease(Tween.EASE_OUT)
 
 
 ## Returns current horizontal velocity magnitude.

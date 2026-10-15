@@ -433,6 +433,76 @@ func paint_expanding_circle(origin: Vector3, final_radius: float, duration: floa
 	return tween
 
 
+## Erase player-created painted ground in a circular area.
+## The permanent center patch is preserved.
+## Returns the number of cells erased.
+func erase_circle(origin: Vector3, radius: float) -> int:
+	if not mask_image or not mask_texture:
+		return 0
+
+	var min_world_x := origin.x - radius
+	var max_world_x := origin.x + radius
+	var min_world_z := origin.z - radius
+	var max_world_z := origin.z + radius
+
+	var p_min := world_to_pixel(Vector3(min_world_x, 0.0, min_world_z))
+	var p_max := world_to_pixel(Vector3(max_world_x, 0.0, max_world_z))
+
+	var start_x := mini(p_min.x, p_max.x)
+	var end_x := maxi(p_min.x, p_max.x)
+	var start_y := mini(p_min.y, p_max.y)
+	var end_y := maxi(p_min.y, p_max.y)
+
+	var cells_erased := 0
+	var r_sq := radius * radius
+
+	for py in range(start_y, end_y + 1):
+		var v := (float(py) + 0.5) / float(mask_resolution)
+		var wz := (v - 0.5) * ground_size.y + ground_offset.y
+
+		for px in range(start_x, end_x + 1):
+			var u := (float(px) + 0.5) / float(mask_resolution)
+			var wx := (u - 0.5) * ground_size.x + ground_offset.x
+
+			var diff := Vector2(wx - origin.x, wz - origin.z)
+			if diff.length_squared() > r_sq:
+				continue
+
+			var idx := py * mask_resolution + px
+
+			# Do not overwrite the permanent center patch
+			if _cell_is_center[idx] == 1:
+				continue
+
+			if _cell_timers[idx] > 0.0 or _cell_connected[idx] == 1 or _active_cells.has(idx):
+				_cell_timers[idx] = 0.0
+				_cell_connected[idx] = 0
+				_active_cells.erase(idx)
+				mask_image.set_pixel(px, py, Color(0.0, 0.0, 0.0, 1.0))
+				cells_erased += 1
+
+	if cells_erased > 0:
+		_recalculate_connectivity()
+		_render_active_cells()
+		mask_texture.update(mask_image)
+		mask_updated.emit()
+
+	return cells_erased
+
+
+## Returns true if there is player-created color at the given world position
+func has_player_color_at(world_pos: Vector3) -> bool:
+	if not mask_image or _cell_connected.is_empty():
+		return false
+	var p := world_to_pixel(world_pos)
+	var idx := p.y * mask_resolution + p.x
+	if idx < 0 or idx >= _cell_connected.size():
+		return false
+	if _cell_is_center[idx] == 1:
+		return false # Center patch is permanent, not player-created color
+	return _cell_connected[idx] == 1 or _cell_timers[idx] > 0.0 or _active_cells.has(idx)
+
+
 # ==============================================================================
 # Connectivity Engine (Flood-Fill BFS from Center Patch)
 # ==============================================================================

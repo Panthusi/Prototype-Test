@@ -4,11 +4,15 @@ extends Node3D
 @onready var player: Player = $Player
 @onready var camera: Camera3D = $Camera3D
 @onready var ground: Ground = $Ground
+@onready var enemy: Enemy = get_node_or_null("Enemy") as Enemy
 
 @export var camera_offset: Vector3 = Vector3(0, 14, 10)
 @export var camera_follow_speed: float = 8.0
 
 var _status_label: Label
+var _enemy_status_label: Label
+var _player_health_label: Label
+var _player_health_bar: ProgressBar
 var _help_label: Label
 
 
@@ -19,6 +23,9 @@ func _ready() -> void:
 
 	if player and ground:
 		player.ground = ground
+
+	if not enemy:
+		enemy = get_tree().get_first_node_in_group("enemy") as Enemy
 
 	_setup_hud()
 
@@ -32,8 +39,8 @@ func _setup_hud() -> void:
 	panel.set_anchors_preset(Control.PRESET_TOP_LEFT)
 	panel.offset_left = 16
 	panel.offset_top = 16
-	panel.offset_right = 450
-	panel.offset_bottom = 150
+	panel.offset_right = 470
+	panel.offset_bottom = 190
 	canvas.add_child(panel)
 
 	# Margin container for clean padding
@@ -48,13 +55,57 @@ func _setup_hud() -> void:
 	vbox.add_theme_constant_override("separation", 6)
 	margin.add_child(vbox)
 
+	# Player Health Bar Row
+	var hp_box := HBoxContainer.new()
+	hp_box.add_theme_constant_override("separation", 10)
+	vbox.add_child(hp_box)
+
+	_player_health_label = Label.new()
+	_player_health_label.add_theme_font_size_override("font_size", 14)
+	if player:
+		_player_health_label.text = "Player HP: %d / %d" % [int(player.current_health), int(player.max_health)]
+	else:
+		_player_health_label.text = "Player HP: 100 / 100"
+	hp_box.add_child(_player_health_label)
+
+	_player_health_bar = ProgressBar.new()
+	_player_health_bar.custom_minimum_size = Vector2(170, 16)
+	_player_health_bar.show_percentage = false
+	if player:
+		_player_health_bar.max_value = player.max_health
+		_player_health_bar.value = player.current_health
+
+	var hp_fill := StyleBoxFlat.new()
+	hp_fill.bg_color = Color(0.2, 0.85, 0.35, 1.0)
+	hp_fill.set_corner_radius_all(4)
+	_player_health_bar.add_theme_stylebox_override("fill", hp_fill)
+
+	var hp_bg := StyleBoxFlat.new()
+	hp_bg.bg_color = Color(0.12, 0.15, 0.18, 0.9)
+	hp_bg.set_corner_radius_all(4)
+	_player_health_bar.add_theme_stylebox_override("background", hp_bg)
+	hp_box.add_child(_player_health_bar)
+
+	if player:
+		player.health_changed.connect(func(cur: float, max_hp: float):
+			if _player_health_bar:
+				_player_health_bar.max_value = max_hp
+				_player_health_bar.value = cur
+			if _player_health_label:
+				_player_health_label.text = "Player HP: %d / %d" % [int(cur), int(max_hp)]
+		)
+
 	_status_label = Label.new()
-	_status_label.add_theme_font_size_override("font_size", 16)
+	_status_label.add_theme_font_size_override("font_size", 15)
 	vbox.add_child(_status_label)
+
+	_enemy_status_label = Label.new()
+	_enemy_status_label.add_theme_font_size_override("font_size", 13)
+	vbox.add_child(_enemy_status_label)
 
 	_help_label = Label.new()
 	_help_label.add_theme_font_size_override("font_size", 12)
-	_help_label.text = "Center patch is PERMANENT.\nConnect grass/slashes to center -> turn GREEN & give SPEED BOOST!\nLMB / F : Slash | Space : Dodge | E / Q : Throw Grenade | WASD : Move | RMB : Move to\nT : Textures | C : Clear Slashes | G : Toggle Ground Creation"
+	_help_label.text = "Center patch is PERMANENT. Connect grass to center -> GREEN & BOOST!\nEnemy: Follows, destroys color on step/attack, charges sword, revives in 5s\nLMB/F: Slash | Space: Dodge | E/Q: Grenade | WASD: Move | RMB: Move to | T: Textures | C: Clear"
 	vbox.add_child(_help_label)
 
 
@@ -94,6 +145,23 @@ func _update_hud() -> void:
 	else:
 		_status_label.text = "Mode: %s\nSpeed: %.1f m/s  (Normal)" % [mode_str, spd]
 		_status_label.modulate = Color(0.9, 0.9, 0.9)
+
+	if not enemy:
+		enemy = get_tree().get_first_node_in_group("enemy") as Enemy
+
+	if _enemy_status_label and enemy:
+		if enemy.current_state == Enemy.State.DEAD:
+			_enemy_status_label.text = "Enemy: DEAD (Reviving in %.1fs...)" % [enemy.revive_delay]
+			_enemy_status_label.modulate = Color(0.6, 0.6, 0.6)
+		elif enemy.current_state == Enemy.State.CHARGE_UP:
+			_enemy_status_label.text = "Enemy: [ CHARGING SWORD ATTACK! ]  HP: %d / %d" % [int(enemy.current_health), int(enemy.max_health)]
+			_enemy_status_label.modulate = Color(1.0, 0.3, 0.1)
+		elif enemy.current_state == Enemy.State.ATTACK_SWING:
+			_enemy_status_label.text = "Enemy: [ SWORD SLASH! Ground Cleared! ]  HP: %d / %d" % [int(enemy.current_health), int(enemy.max_health)]
+			_enemy_status_label.modulate = Color(1.0, 0.1, 0.1)
+		else:
+			_enemy_status_label.text = "Enemy: Chasing Player  HP: %d / %d" % [int(enemy.current_health), int(enemy.max_health)]
+			_enemy_status_label.modulate = Color(0.95, 0.45, 0.45)
 
 
 func _unhandled_input(event: InputEvent) -> void:
