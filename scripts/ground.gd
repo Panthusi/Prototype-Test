@@ -347,6 +347,92 @@ func paint_slash(origin: Vector3, forward: Vector3, min_r: float = 0.8, max_r: f
 		mask_updated.emit()
 
 
+## Paint a full circular patch on the ground.
+## Areas connected to the center patch turn GREEN and stay permanent.
+## Unconnected areas appear as grass/slash ground and remain permanent.
+## Returns the count of newly painted cells.
+func paint_circle(origin: Vector3, radius: float) -> int:
+	if not enable_ground_creation:
+		return 0
+	if not mask_image or not mask_texture:
+		return 0
+
+	var min_world_x := origin.x - radius
+	var max_world_x := origin.x + radius
+	var min_world_z := origin.z - radius
+	var max_world_z := origin.z + radius
+
+	var p_min := world_to_pixel(Vector3(min_world_x, 0.0, min_world_z))
+	var p_max := world_to_pixel(Vector3(max_world_x, 0.0, max_world_z))
+
+	var start_x := mini(p_min.x, p_max.x)
+	var end_x := maxi(p_min.x, p_max.x)
+	var start_y := mini(p_min.y, p_max.y)
+	var end_y := maxi(p_min.y, p_max.y)
+
+	var cells_painted := 0
+	var r_sq := radius * radius
+
+	for py in range(start_y, end_y + 1):
+		var v := (float(py) + 0.5) / float(mask_resolution)
+		var wz := (v - 0.5) * ground_size.y + ground_offset.y
+
+		for px in range(start_x, end_x + 1):
+			var u := (float(px) + 0.5) / float(mask_resolution)
+			var wx := (u - 0.5) * ground_size.x + ground_offset.x
+
+			var diff := Vector2(wx - origin.x, wz - origin.z)
+			if diff.length_squared() > r_sq:
+				continue
+
+			var idx := py * mask_resolution + px
+
+			# Do not overwrite the permanent center patch
+			if _cell_is_center[idx] == 1:
+				continue
+
+			if _cell_timers[idx] <= 0.0:
+				cells_painted += 1
+
+			_cell_timers[idx] = fade_duration
+			_active_cells[idx] = true
+
+	if cells_painted > 0:
+		_recalculate_connectivity()
+		_render_active_cells()
+		mask_texture.update(mask_image)
+		mask_updated.emit()
+
+	return cells_painted
+
+
+## Paint a circular patch that grows smoothly from the center out.
+## Uses an easing curve to create an organic blossom/shockwave effect.
+func paint_expanding_circle(origin: Vector3, final_radius: float, duration: float = 0.35) -> Tween:
+	if not enable_ground_creation:
+		return null
+	if not mask_image or not mask_texture:
+		return null
+
+	if not is_inside_tree() or duration <= 0.0:
+		paint_circle(origin, final_radius)
+		return null
+
+	# Initial small center stamp
+	paint_circle(origin, minf(0.4, final_radius))
+
+	var tween := create_tween()
+	tween.tween_method(
+		func(r: float) -> void:
+			paint_circle(origin, r),
+		0.4,
+		final_radius,
+		duration
+	).set_trans(Tween.TRANS_QUAD).set_ease(Tween.EASE_OUT)
+
+	return tween
+
+
 # ==============================================================================
 # Connectivity Engine (Flood-Fill BFS from Center Patch)
 # ==============================================================================

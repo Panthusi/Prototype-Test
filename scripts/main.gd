@@ -54,7 +54,7 @@ func _setup_hud() -> void:
 
 	_help_label = Label.new()
 	_help_label.add_theme_font_size_override("font_size", 12)
-	_help_label.text = "Center patch is PERMANENT.\nConnect slashes to center -> turn GREEN & give SPEED BOOST!\nDisconnected slashes are PERMANENT blue slashes.\nLMB / F : Slash | WASD : Move | T : Textures | C : Clear Slashes | G : Toggle Ground Creation"
+	_help_label.text = "Center patch is PERMANENT.\nConnect grass/slashes to center -> turn GREEN & give SPEED BOOST!\nLMB / F : Slash | E / Q : Throw Grenade | WASD : Move | RMB : Move to\nT : Textures | C : Clear Slashes | G : Toggle Ground Creation"
 	vbox.add_child(_help_label)
 
 
@@ -86,8 +86,8 @@ func _update_hud() -> void:
 			_status_label.text = "Mode: %s\nSpeed: %.1f m/s  [ CONNECTED GREEN - PERMANENT BOOST! ]" % [mode_str, spd]
 			_status_label.modulate = Color(0.15, 0.95, 0.35)
 		else:
-			_status_label.text = "Mode: %s\nSpeed: %.1f m/s  [ BLUE SLASH - BOOST ACTIVE! ]" % [mode_str, spd]
-			_status_label.modulate = Color(0.12, 0.82, 1.0)
+			_status_label.text = "Mode: %s\nSpeed: %.1f m/s  [ GRASS BOOST ACTIVE! ]" % [mode_str, spd]
+			_status_label.modulate = Color(0.2, 0.85, 0.3)
 	else:
 		_status_label.text = "Mode: %s\nSpeed: %.1f m/s  (Normal)" % [mode_str, spd]
 		_status_label.modulate = Color(0.9, 0.9, 0.9)
@@ -108,10 +108,17 @@ func _unhandled_input(event: InputEvent) -> void:
 			elif event.button_index == MOUSE_BUTTON_RIGHT:
 				# External control: Command player to walk to clicked destination
 				player.move_to(ground_point)
+			elif event.button_index == MOUSE_BUTTON_MIDDLE:
+				# Middle click: Throw grenade towards clicked direction
+				var throw_direction: Vector3 = ground_point - player.global_position
+				throw_direction.y = 0.0
+				player.throw_grenade(throw_direction)
 
 	elif event is InputEventKey and event.pressed and not event.echo:
 		if event.keycode == KEY_SPACE:
 			player.stop()
+		elif event.keycode == KEY_E or event.keycode == KEY_Q:
+			player.throw_grenade()
 		elif event.keycode == KEY_T:
 			if ground:
 				ground.toggle_textures()

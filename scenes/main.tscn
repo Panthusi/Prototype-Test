@@ -59,7 +59,7 @@ shadow_enabled = true
 transform = Transform3D(1, 0, 0, 0, 1, 0, 0, 0, 1, 0, -0.5, 0)
 script = ExtResource("4_ground")
 color_slash = Color(0.19825411, 0.75062656, 0.240233, 1)
-color_connected = Color(0.10714432, 0.34461954, 0.11468566, 1)
+color_connected = Color(0.2, 0.7490196, 0.23921569, 1)
 texture_base = ExtResource("3_tefeu")
 texture_slash = ExtResource("4_o6xl0")
 

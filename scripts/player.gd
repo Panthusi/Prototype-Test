@@ -8,6 +8,7 @@ signal attack_started()
 signal attack_finished()
 signal attack_hit(target: Node3D)
 signal boosted_status_changed(is_boosted: bool, factor: float)
+signal grenade_thrown(grenade: Node3D)
 
 @export_group("Movement Settings")
 ## Maximum walking speed on the plane
@@ -47,8 +48,26 @@ signal boosted_status_changed(is_boosted: bool, factor: float)
 ## Sweep angle of the slash arc in degrees (wider sweep)
 @export var slash_arc_degrees: float = 135.0
 
+@export_group("Grenade Settings")
+## Scene to instantiate when throwing a grenade
+@export var grenade_scene: PackedScene = null
+## Forward throw speed
+@export var grenade_throw_speed: float = 12.0
+## Upward launch speed for arcing trajectory
+@export var grenade_upward_speed: float = 5.5
+## Radius of the grass circle created by grenade explosion
+@export var grenade_blast_radius: float = 4.0
+## Duration for the circle to expand from the center outward (seconds)
+@export var grenade_grow_duration: float = 0.35
+## Minimum delay between consecutive grenade throws (seconds)
+@export var grenade_cooldown: float = 0.8
+## Damage dealt by the grenade explosion
+@export var grenade_damage: float = 50.0
+## Enables or disables creating grass on the ground during grenade explosion
+@export var enable_grenade_ground_creation: bool = true
+
 @export_group("External Control")
-## If true, reads default keyboard (WASD / Arrows / F / J) when external input is zero.
+## If true, reads default keyboard (WASD / Arrows / F / J / E / Q) when external input is zero.
 @export var enable_keyboard_fallback: bool = true
 
 ## External directional input vector (X = right/left, Y = down/up).
@@ -62,6 +81,9 @@ var destination_arrival_threshold: float = 0.2
 ## Attack state
 var is_attacking: bool = false
 var _can_attack: bool = true
+
+## Grenade state
+var _can_throw_grenade: bool = true
 
 ## Ground boost tracking
 var current_boost_factor: float = 0.0
@@ -150,6 +172,90 @@ func is_moving() -> bool:
 ## Returns true if the player is currently able to perform an attack.
 func can_attack() -> bool:
 	return _can_attack and not is_attacking
+
+
+## Throw a grenade in the direction the player is looking at.
+## If target_direction is provided, the player orients towards it before throwing.
+## Returns true if the grenade was successfully thrown.
+func throw_grenade(target_direction: Vector3 = Vector3.ZERO) -> bool:
+	if not _can_throw_grenade:
+		return false
+
+	_can_throw_grenade = false
+
+	# If a specific throw direction was requested, face that direction
+	if target_direction.length_squared() > 0.001:
+		target_direction.y = 0.0
+		var look_basis := Basis.looking_at(target_direction.normalized(), Vector3.UP)
+		basis = look_basis.orthonormalized()
+
+	# Throw in the direction the player is looking at
+	var throw_dir := -basis.z
+
+	if not grenade_scene:
+		if ResourceLoader.exists("res://scenes/grenade.tscn"):
+			grenade_scene = load("res://scenes/grenade.tscn")
+
+	if not grenade_scene:
+		push_error("Player: Could not load grenade_scene")
+		_can_throw_grenade = true
+		return false
+
+	var grenade := grenade_scene.instantiate() as Grenade
+	if not grenade:
+		push_error("Player: Instantiated grenade is not of type Grenade")
+		_can_throw_grenade = true
+		return false
+
+	if not ground:
+		_find_ground()
+
+	grenade.thrower = self
+	grenade.ground = ground as Ground
+	grenade.blast_radius = grenade_blast_radius
+	grenade.blast_damage = grenade_damage
+	grenade.grow_duration = grenade_grow_duration
+	grenade.forward_speed = grenade_throw_speed
+	grenade.upward_speed = grenade_upward_speed
+
+	# Add grenade to parent / scene tree first so it is inside tree
+	var parent_node := get_parent()
+	if not parent_node:
+		parent_node = get_tree().current_scene
+	if parent_node:
+		parent_node.add_child(grenade)
+	else:
+		add_sibling(grenade)
+
+	# Spawn grenade slightly in front of player at chest height
+	var spawn_pos := global_position + Vector3(0.0, 1.1, 0.0) + throw_dir * 0.5
+	grenade.global_position = spawn_pos
+
+	# Launch grenade with ballistic arc
+	grenade.launch(throw_dir, grenade_throw_speed, grenade_upward_speed)
+
+	grenade_thrown.emit(grenade)
+	_play_throw_feedback()
+
+	# Cooldown timer
+	get_tree().create_timer(grenade_cooldown).timeout.connect(func():
+		_can_throw_grenade = true
+	)
+
+	return true
+
+
+## Returns true if the player is currently able to throw a grenade.
+func can_throw_grenade() -> bool:
+	return _can_throw_grenade
+
+
+func _play_throw_feedback() -> void:
+	if visor and _visor_material:
+		var orig_color: Color = _visor_material.albedo_color
+		var tween := create_tween()
+		tween.tween_property(_visor_material, "albedo_color", Color(0.25, 0.95, 0.4), 0.08)
+		tween.tween_property(_visor_material, "albedo_color", orig_color, 0.12)
 
 
 # ==============================================================================
@@ -430,10 +536,12 @@ func _physics_process(delta: float) -> void:
 
 
 func _unhandled_input(event: InputEvent) -> void:
-	# Keyboard attack shortcut fallback (F or J)
+	# Keyboard attack shortcut fallback (F or J) & Grenade throw (E or Q)
 	if enable_keyboard_fallback and event is InputEventKey and event.pressed and not event.echo:
 		if event.keycode == KEY_F or event.keycode == KEY_J:
 			slash()
+		elif event.keycode == KEY_E or event.keycode == KEY_Q:
+			throw_grenade()
 
 
 func _read_keyboard_input() -> Vector2:

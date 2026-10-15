@@ -1,6 +1,7 @@
 [gd_scene format=3 uid="uid://v6ar0k53g5nd"]
 
 [ext_resource type="Script" uid="uid://d152unrx4urt0" path="res://scripts/player.gd" id="1_player"]
+[ext_resource type="PackedScene" path="res://scenes/grenade.tscn" id="2_grenade"]
 
 [sub_resource type="CapsuleShape3D" id="CapsuleShape3D_1"]
 radius = 0.4
@@ -33,6 +34,7 @@ enable_ground_creation = false
 attack_cooldown = 0.5
 attack_lunge_speed = 1.0
 slash_outer_radius = 2.0
+grenade_scene = ExtResource("2_grenade")
 
 [node name="CollisionShape3D" type="CollisionShape3D" parent="." unique_id=1576691269]
 transform = Transform3D(1, 0, 0, 0, 1, 0, 0, 0, 1, 0, 0.9, 0)

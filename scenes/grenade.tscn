@@ -1,0 +1,107 @@
+[gd_scene format=3]
+
+[ext_resource type="Script" path="res://scripts/grenade.gd" id="1_grenade"]
+
+[sub_resource type="SphereShape3D" id="SphereShape3D_1"]
+radius = 0.25
+
+[sub_resource type="StandardMaterial3D" id="StandardMaterial3D_body"]
+albedo_color = Color(0.18, 0.32, 0.18, 1)
+metallic = 0.65
+roughness = 0.35
+
+[sub_resource type="SphereMesh" id="SphereMesh_body"]
+material = SubResource("StandardMaterial3D_body")
+radius = 0.18
+height = 0.32
+
+[sub_resource type="StandardMaterial3D" id="StandardMaterial3D_ring"]
+shading_mode = 0
+albedo_color = Color(0.25, 0.95, 0.4, 1)
+
+[sub_resource type="TorusMesh" id="TorusMesh_ring"]
+material = SubResource("StandardMaterial3D_ring")
+inner_radius = 0.12
+outer_radius = 0.19
+
+[sub_resource type="StandardMaterial3D" id="StandardMaterial3D_pin"]
+albedo_color = Color(0.4, 0.45, 0.5, 1)
+metallic = 0.8
+roughness = 0.2
+
+[sub_resource type="CylinderMesh" id="CylinderMesh_pin"]
+material = SubResource("StandardMaterial3D_pin")
+top_radius = 0.05
+bottom_radius = 0.05
+height = 0.1
+
+[sub_resource type="StandardMaterial3D" id="StandardMaterial3D_shockwave"]
+transparency = 1
+cull_mode = 2
+shading_mode = 0
+albedo_color = Color(0.25, 0.95, 0.4, 0.85)
+
+[sub_resource type="CylinderMesh" id="CylinderMesh_shockwave"]
+material = SubResource("StandardMaterial3D_shockwave")
+top_radius = 1.0
+bottom_radius = 1.0
+height = 0.02
+
+[node name="Grenade" type="Area3D"]
+collision_layer = 0
+collision_mask = 3
+script = ExtResource("1_grenade")
+
+[node name="CollisionShape3D" type="CollisionShape3D" parent="."]
+shape = SubResource("SphereShape3D_1")
+
+[node name="GrenadeVisual" type="Node3D" parent="."]
+
+[node name="BodyMesh" type="MeshInstance3D" parent="GrenadeVisual"]
+mesh = SubResource("SphereMesh_body")
+
+[node name="RingMesh" type="MeshInstance3D" parent="GrenadeVisual"]
+mesh = SubResource("TorusMesh_ring")
+
+[node name="PinMesh" type="MeshInstance3D" parent="GrenadeVisual"]
+transform = Transform3D(1, 0, 0, 0, 1, 0, 0, 0, 1, 0, 0.16, 0)
+mesh = SubResource("CylinderMesh_pin")
+
+[node name="TrailParticles" type="CPUParticles3D" parent="."]
+amount = 20
+lifetime = 0.35
+direction = Vector3(0, 0, 1)
+spread = 25.0
+gravity = Vector3(0, 0.5, 0)
+initial_velocity_min = 0.5
+initial_velocity_max = 1.5
+scale_amount_min = 0.08
+scale_amount_max = 0.15
+color = Color(0.25, 0.95, 0.4, 0.6)
+
+[node name="ExplosionEffect" type="Node3D" parent="."]
+visible = false
+
+[node name="ShockwaveRing" type="MeshInstance3D" parent="ExplosionEffect"]
+transform = Transform3D(0.1, 0, 0, 0, 1, 0, 0, 0, 0.1, 0, 0.04, 0)
+mesh = SubResource("CylinderMesh_shockwave")
+
+[node name="BurstParticles" type="CPUParticles3D" parent="ExplosionEffect"]
+emitting = false
+amount = 40
+lifetime = 0.6
+one_shot = true
+explosiveness = 1.0
+direction = Vector3(0, 1, 0)
+spread = 80.0
+gravity = Vector3(0, -18, 0)
+initial_velocity_min = 5.0
+initial_velocity_max = 9.0
+scale_amount_min = 0.1
+scale_amount_max = 0.22
+color = Color(0.25, 0.95, 0.4, 1)
+
+[node name="ExplosionLight" type="OmniLight3D" parent="ExplosionEffect"]
+light_color = Color(0.25, 1, 0.4, 1)
+light_energy = 0.0
+omni_range = 7.0
