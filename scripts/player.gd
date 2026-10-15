@@ -13,6 +13,8 @@ signal dodge_started(direction: Vector3)
 signal dodge_finished()
 signal health_changed(current: float, max_health: float)
 signal died()
+signal hook_started(target_pos: Vector3, target_node: Variant)
+signal hook_finished()
 
 @export_group("Health Settings")
 ## Maximum health points of the player
@@ -91,8 +93,22 @@ signal died()
 ## Multiplier applied to effective movement speed during dodge (compat)
 @export var dodge_speed_multiplier: float = 2.2
 
+@export_group("Grappling Hook Settings")
+## Enable or disable grappling onto enemies
+@export var hook_can_target_enemies: bool = true
+## Maximum range of the grappling hook (meters)
+@export var hook_max_range: float = 24.0
+## Pull / travel speed towards the hooked target (meters/second)
+@export var hook_pull_speed: float = 22.0
+## Minimum delay between consecutive grappling hook uses (seconds)
+@export var hook_cooldown: float = 0.5
+## Distance threshold to consider arrival at grappling target
+@export var hook_arrival_threshold: float = 1.2
+## Slight impulse / momentum boost forward upon finishing hook pull
+@export var hook_finish_boost: float = 4.0
+
 @export_group("External Control")
-## If true, reads default keyboard (WASD / Arrows / Space / F / J / E / Q) when external input is zero.
+## If true, reads default keyboard (WASD / Arrows / Space / F / J / E / Q / R / Shift) when external input is zero.
 @export var enable_keyboard_fallback: bool = true
 
 ## External directional input vector (X = right/left, Y = down/up).
@@ -118,6 +134,14 @@ var _current_dodge_speed: float = 0.0
 var _dodge_distance_target: float = 0.0
 var _dodge_distance_traveled: float = 0.0
 
+## Grappling Hook state
+var is_hooking: bool = false
+var _can_hook: bool = true
+var _hook_target_pos: Vector3 = Vector3.ZERO
+var _hook_target_node: Node3D = null
+var _hook_line_mesh: ImmediateMesh
+var _hook_line_instance: MeshInstance3D
+
 ## Ground boost tracking
 var current_boost_factor: float = 0.0
 var is_on_slash_ground: bool = false
@@ -137,6 +161,7 @@ func _ready() -> void:
 	add_to_group("damageable")
 	_setup_slash_visual()
 	_setup_visor_visual()
+	_setup_hook_visual()
 	_find_ground()
 
 	var health_bar: HealthBar3D = get_node_or_null("HealthBar3D") as HealthBar3D
@@ -194,6 +219,8 @@ func stop() -> void:
 	target_destination = null
 	if is_dodging:
 		_finish_dodge()
+	if is_hooking:
+		_finish_hook()
 	velocity.x = 0.0
 	velocity.z = 0.0
 
@@ -270,12 +297,12 @@ func is_moving() -> bool:
 
 ## Returns true if the player is currently able to perform an attack.
 func can_attack() -> bool:
-	return _can_attack and not is_attacking and not is_dodging
+	return _can_attack and not is_attacking and not is_dodging and not is_hooking
 
 
 ## Returns true if the player is currently able to perform a dodge.
 func can_dodge() -> bool:
-	return _can_dodge and not is_dodging
+	return _can_dodge and not is_dodging and not is_hooking
 
 
 ## Returns effective dodge distance (meters).
@@ -436,7 +463,290 @@ func throw_grenade(target_direction: Vector3 = Vector3.ZERO) -> bool:
 
 ## Returns true if the player is currently able to throw a grenade.
 func can_throw_grenade() -> bool:
-	return _can_throw_grenade and not is_dodging
+	return _can_throw_grenade and not is_dodging and not is_hooking
+
+
+# ==============================================================================
+# Grappling Hook Mechanics
+# ==============================================================================
+
+## Returns true if the player is currently able to fire the grappling hook.
+func can_grapple() -> bool:
+	return _can_hook and not is_hooking and not is_dodging
+
+
+## Check if a given world position on the ground is hookable (has color from slashes, bombs, or center patch).
+func is_ground_hookable_at(world_pos: Vector3) -> bool:
+	if not ground:
+		_find_ground()
+	if not ground:
+		return false
+	if ground.has_method("is_boosted_at") and ground.is_boosted_at(world_pos):
+		return true
+	if ground.has_method("has_player_color_at") and ground.has_player_color_at(world_pos):
+		return true
+	if ground.has_method("is_connected_at") and ground.is_connected_at(world_pos):
+		return true
+	return false
+
+
+## Check if a given node is an enemy and hookable according to hook_can_target_enemies.
+func is_enemy_hookable(target: Node3D) -> bool:
+	if not hook_can_target_enemies:
+		return false
+	if not is_instance_valid(target):
+		return false
+	if target.is_in_group("enemy"):
+		return true
+	return false
+
+
+## Fire grappling hook towards a target 3D point or direction.
+## If target_direction is provided and target_override_pos is not set, casts a ray/search along that direction.
+## If target_override_pos is provided (e.g. from mouse click), attempts to latch to enemy or painted ground at that location.
+## Returns true if the hook successfully latched and started pulling.
+func grapple_hook(target_override_pos: Variant = null, target_direction: Vector3 = Vector3.ZERO) -> bool:
+	if not can_grapple():
+		return false
+
+	var latch_pos: Vector3 = Vector3.ZERO
+	var latched_node: Node3D = null
+	var found_latch := false
+
+	# 1. Check if specific world destination was provided (e.g. mouse click on ground or entity)
+	if target_override_pos != null and target_override_pos is Vector3:
+		var candidate_pos: Vector3 = target_override_pos
+		var dist_to_candidate := global_position.distance_to(candidate_pos)
+
+		if dist_to_candidate <= hook_max_range:
+			# Check for nearby enemy first if enemy targeting is enabled
+			if hook_can_target_enemies:
+				var candidate_enemy := _find_enemy_near(candidate_pos, 2.0)
+				if candidate_enemy:
+					latch_pos = candidate_enemy.global_position
+					latched_node = candidate_enemy
+					found_latch = true
+
+			# If no enemy latched, check for painted ground
+			if not found_latch:
+				candidate_pos.y = 0.0
+				if is_ground_hookable_at(candidate_pos):
+					latch_pos = candidate_pos
+					found_latch = true
+
+	# 2. If no direct latch found and no specific destination was given, search along aim direction
+	if not found_latch and target_override_pos == null:
+		var aim_dir := target_direction
+		if aim_dir.length_squared() < 0.001:
+			var input_vec := external_input
+			if input_vec.is_zero_approx() and enable_keyboard_fallback:
+				input_vec = _read_keyboard_input()
+			if not input_vec.is_zero_approx():
+				aim_dir = Vector3(input_vec.x, 0.0, input_vec.y).normalized()
+			else:
+				aim_dir = -basis.z
+
+		aim_dir.y = 0.0
+		aim_dir = aim_dir.normalized()
+
+		# Check for enemies along aim line
+		if hook_can_target_enemies:
+			var best_enemy := _find_best_enemy_in_direction(aim_dir, hook_max_range)
+			if best_enemy:
+				latch_pos = best_enemy.global_position
+				latched_node = best_enemy
+				found_latch = true
+
+		# If no enemy found along line, ray march ground cells along aim direction for painted color
+		if not found_latch:
+			var ground_hit: Variant = _find_hookable_ground_in_direction(aim_dir, hook_max_range)
+			if ground_hit != null:
+				latch_pos = ground_hit
+				found_latch = true
+
+	if not found_latch:
+		# Play a quick fail "dry fire" visor flicker
+		_play_hook_fail_feedback()
+		return false
+
+	# Successfully latched!
+	_start_hook(latch_pos, latched_node)
+	return true
+
+
+func _find_enemy_near(pos: Vector3, search_radius: float) -> Node3D:
+	var enemies: Array[Node] = get_tree().get_nodes_in_group("enemy")
+	var best_enemy: Node3D = null
+	var best_dist: float = search_radius
+
+	for e in enemies:
+		if e is Node3D and is_instance_valid(e):
+			var node_3d := e as Node3D
+			var d: float = pos.distance_to(node_3d.global_position)
+			if d < best_dist:
+				best_dist = d
+				best_enemy = node_3d
+
+	return best_enemy
+
+
+func _find_best_enemy_in_direction(dir: Vector3, max_range: float) -> Node3D:
+	var enemies: Array[Node] = get_tree().get_nodes_in_group("enemy")
+	var best_enemy: Node3D = null
+	var best_score: float = -999.0
+
+	for e in enemies:
+		if e is Node3D and is_instance_valid(e):
+			var node_3d := e as Node3D
+			var diff: Vector3 = node_3d.global_position - global_position
+			diff.y = 0.0
+			var dist: float = diff.length()
+			if dist <= 0.5 or dist > max_range:
+				continue
+			var ndiff: Vector3 = diff.normalized()
+			var dot: float = dir.dot(ndiff)
+			# Only enemies roughly in front (cone of ~100 degrees)
+			if dot > 0.35:
+				var score: float = dot * (1.0 - (dist / max_range) * 0.4)
+				if score > best_score:
+					best_score = score
+					best_enemy = node_3d
+
+	return best_enemy
+
+
+func _find_hookable_ground_in_direction(dir: Vector3, max_range: float) -> Variant:
+	# Raymarch outward along dir looking for painted ground
+	var step := 0.6
+	var d := 1.2
+	var best_point: Variant = null
+
+	while d <= max_range:
+		var check_pos := global_position + dir * d
+		check_pos.y = 0.0
+		if is_ground_hookable_at(check_pos):
+			best_point = check_pos
+		elif best_point != null:
+			# Found painted ground previously; stop at edge or keep point
+			break
+		d += step
+
+	return best_point
+
+
+func _start_hook(target_pos: Vector3, target_node: Variant) -> void:
+	is_hooking = true
+	_can_hook = false
+	_hook_target_pos = target_pos
+	_hook_target_node = target_node
+
+	# Interrupt active attack
+	if is_attacking:
+		is_attacking = false
+		if _slash_tween:
+			_slash_tween.kill()
+		if slash_pivot:
+			slash_pivot.visible = false
+		attack_finished.emit()
+
+	# Clear movement inputs
+	target_destination = null
+	external_input = Vector2.ZERO
+
+	# Face towards hook target
+	var face_dir := _hook_target_pos - global_position
+	face_dir.y = 0.0
+	if face_dir.length_squared() > 0.001:
+		var look_basis := Basis.looking_at(face_dir.normalized(), Vector3.UP)
+		basis = look_basis.orthonormalized()
+
+	hook_started.emit(target_pos, target_node)
+	_play_hook_start_feedback()
+	_update_hook_rope()
+
+
+func _finish_hook() -> void:
+	if not is_hooking:
+		return
+
+	is_hooking = false
+	var final_dir := _hook_target_pos - global_position
+	final_dir.y = 0.0
+
+	# Hide hook rope
+	if _hook_line_mesh:
+		_hook_line_mesh.clear_surfaces()
+	if _hook_line_instance:
+		_hook_line_instance.visible = false
+
+	# Apply slight finish momentum impulse forward
+	if final_dir.length_squared() > 0.01:
+		velocity.x = final_dir.normalized().x * hook_finish_boost
+		velocity.z = final_dir.normalized().z * hook_finish_boost
+	else:
+		velocity.x = 0.0
+		velocity.z = 0.0
+
+	_hook_target_node = null
+	hook_finished.emit()
+
+	# Cooldown timer
+	get_tree().create_timer(hook_cooldown).timeout.connect(func():
+		_can_hook = true
+	)
+
+
+func _setup_hook_visual() -> void:
+	if not _hook_line_instance:
+		_hook_line_mesh = ImmediateMesh.new()
+		_hook_line_instance = MeshInstance3D.new()
+		_hook_line_instance.mesh = _hook_line_mesh
+		_hook_line_instance.top_level = true # Render in global coordinates
+
+		var mat := StandardMaterial3D.new()
+		mat.shading_mode = BaseMaterial3D.SHADING_MODE_UNSHADED
+		mat.albedo_color = Color(0.2, 0.9, 1.0, 1.0)
+		mat.emission_enabled = true
+		mat.emission = Color(0.2, 0.9, 1.0)
+		mat.emission_energy_multiplier = 2.0
+		mat.cull_mode = BaseMaterial3D.CULL_DISABLED
+		_hook_line_instance.material_override = mat
+		_hook_line_instance.visible = false
+		add_child(_hook_line_instance)
+
+
+func _update_hook_rope() -> void:
+	if not is_hooking or not _hook_line_mesh or not _hook_line_instance:
+		return
+
+	var start_pos := global_position + Vector3(0.0, 0.9, 0.0)
+	var end_pos := _hook_target_pos
+	if is_instance_valid(_hook_target_node):
+		end_pos = _hook_target_node.global_position + Vector3(0.0, 0.8, 0.0)
+		_hook_target_pos = _hook_target_node.global_position
+
+	_hook_line_instance.visible = true
+	_hook_line_mesh.clear_surfaces()
+	_hook_line_mesh.surface_begin(Mesh.PRIMITIVE_LINES)
+	_hook_line_mesh.surface_add_vertex(start_pos)
+	_hook_line_mesh.surface_add_vertex(end_pos)
+	_hook_line_mesh.surface_end()
+
+
+func _play_hook_start_feedback() -> void:
+	if visor and _visor_material:
+		var orig_color: Color = _visor_material.albedo_color
+		var tween := create_tween()
+		tween.tween_property(_visor_material, "albedo_color", Color(0.2, 0.9, 1.0), 0.06)
+		tween.tween_property(_visor_material, "albedo_color", orig_color, 0.15)
+
+
+func _play_hook_fail_feedback() -> void:
+	if visor and _visor_material:
+		var orig_color: Color = _visor_material.albedo_color
+		var tween := create_tween()
+		tween.tween_property(_visor_material, "albedo_color", Color(0.9, 0.2, 0.2), 0.06)
+		tween.tween_property(_visor_material, "albedo_color", orig_color, 0.12)
 
 
 func _play_throw_feedback() -> void:
@@ -752,8 +1062,34 @@ func _physics_process(delta: float) -> void:
 	var horizontal_vel := Vector3(velocity.x, 0.0, velocity.z)
 	var target_vel := move_direction * effective_speed
 	var should_finish_dodge_this_frame := false
+	var should_finish_hook_this_frame := false
 
-	if is_dodging:
+	if is_hooking:
+		# Update target position if tracking a living enemy
+		if is_instance_valid(_hook_target_node):
+			_hook_target_pos = _hook_target_node.global_position
+
+		var to_target := _hook_target_pos - global_position
+		to_target.y = 0.0
+		var dist_to_target := to_target.length()
+
+		if dist_to_target <= hook_arrival_threshold:
+			should_finish_hook_this_frame = true
+			horizontal_vel = Vector3.ZERO
+		else:
+			var pull_dir := to_target.normalized()
+			var step_dist := hook_pull_speed * delta
+			if step_dist >= dist_to_target:
+				# Target reached in this step
+				horizontal_vel = pull_dir * (dist_to_target / maxf(delta, 0.0001))
+				should_finish_hook_this_frame = true
+			else:
+				horizontal_vel = pull_dir * hook_pull_speed
+				# Keep facing hook destination
+				var look_basis := Basis.looking_at(pull_dir, Vector3.UP)
+				basis = basis.slerp(look_basis, rotation_speed * 1.5 * delta).orthonormalized()
+				_update_hook_rope()
+	elif is_dodging:
 		var step_dist := _current_dodge_speed * delta
 		var remaining_dist := _dodge_distance_target - _dodge_distance_traveled
 		if step_dist >= remaining_dist:
@@ -785,13 +1121,20 @@ func _physics_process(delta: float) -> void:
 	if should_finish_dodge_this_frame:
 		_finish_dodge()
 
+	# If hook reached target this frame or post-move, finish hook
+	if is_hooking:
+		var post_to_target := _hook_target_pos - global_position
+		post_to_target.y = 0.0
+		if should_finish_hook_this_frame or post_to_target.length() <= hook_arrival_threshold + 0.6:
+			_finish_hook()
+
 	# 6. Emit position change if moved
 	if global_position != prev_pos:
 		position_changed.emit(global_position)
 
 
 func _unhandled_input(event: InputEvent) -> void:
-	# Keyboard shortcuts fallback: Space = Dodge, F/J = Slash, E/Q = Grenade
+	# Keyboard shortcuts fallback: Space = Dodge, F/J = Slash, E/Q = Grenade, R/Shift = Grapple
 	if enable_keyboard_fallback and event is InputEventKey and event.pressed and not event.echo:
 		if event.keycode == KEY_SPACE:
 			dodge()
@@ -799,6 +1142,8 @@ func _unhandled_input(event: InputEvent) -> void:
 			slash()
 		elif event.keycode == KEY_E or event.keycode == KEY_Q:
 			throw_grenade()
+		elif event.keycode == KEY_R or event.keycode == KEY_SHIFT:
+			grapple_hook()
 
 
 func _read_keyboard_input() -> Vector2:

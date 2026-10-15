@@ -105,7 +105,7 @@ func _setup_hud() -> void:
 
 	_help_label = Label.new()
 	_help_label.add_theme_font_size_override("font_size", 12)
-	_help_label.text = "Center patch is PERMANENT. Connect grass to center -> GREEN & BOOST!\nEnemy: Follows, destroys color on step/attack, charges sword, revives in 5s\nLMB/F: Slash | Space: Dodge | E/Q: Grenade | WASD: Move | RMB: Move to | T: Textures | C: Clear"
+	_help_label.text = "Center patch is PERMANENT. Connect grass to center -> GREEN & BOOST!\nEnemy: Follows, destroys color on step/attack, charges sword, revives in 5s\nLMB/F: Slash | Space: Dodge | E/Q: Grenade | R/Shift: Grapple Hook | WASD: Move | RMB: Move to | T: Textures | C: Clear"
 	vbox.add_child(_help_label)
 
 
@@ -126,13 +126,17 @@ func _update_hud() -> void:
 	var is_boosted := player.is_boosted()
 	var creation_str := "ON" if (ground and ground.enable_ground_creation) else "OFF"
 	var base_mode := "2 Textures (Active)" if (ground and ground.use_texture_base) else "Colors (Hard Corners)"
-	var mode_str := "%s | Ground Creation: %s" % [base_mode, creation_str]
+	var hook_target_str := "Enemies + Color Ground" if player.hook_can_target_enemies else "Color Ground Only"
+	var mode_str := "%s | Creation: %s | Hook: %s" % [base_mode, creation_str, hook_target_str]
 
 	var ground_type := 0
 	if ground and ground.has_method("get_ground_type_at"):
 		ground_type = ground.get_ground_type_at(player.global_position)
 
-	if player.is_dodging:
+	if player.is_hooking:
+		_status_label.text = "Mode: %s\nSpeed: %.1f m/s  [ GRAPPLING HOOK PULLING! ]" % [mode_str, spd]
+		_status_label.modulate = Color(0.2, 0.9, 1.0)
+	elif player.is_dodging:
 		_status_label.text = "Mode: %s\nSpeed: %.1f m/s  [ DODGING! ]" % [mode_str, spd]
 		_status_label.modulate = Color(1.0, 0.9, 0.2)
 	elif is_boosted:
@@ -190,6 +194,14 @@ func _unhandled_input(event: InputEvent) -> void:
 			player.dodge()
 		elif event.keycode == KEY_E or event.keycode == KEY_Q:
 			player.throw_grenade()
+		elif event.keycode == KEY_R or event.keycode == KEY_SHIFT:
+			# R or Shift: Fire grappling hook towards mouse ground point if available, or player aim
+			var vp := get_viewport()
+			var mouse_ground = _get_ground_click_position(vp.get_mouse_position()) if vp else null
+			player.grapple_hook(mouse_ground)
+		elif event.keycode == KEY_H:
+			# Toggle hook enemy targeting boolean for live testing
+			player.hook_can_target_enemies = not player.hook_can_target_enemies
 		elif event.keycode == KEY_T:
 			if ground:
 				ground.toggle_textures()
