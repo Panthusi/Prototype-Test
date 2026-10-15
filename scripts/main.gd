@@ -105,7 +105,7 @@ func _setup_hud() -> void:
 
 	_help_label = Label.new()
 	_help_label.add_theme_font_size_override("font_size", 12)
-	_help_label.text = "Center patch is PERMANENT. Connect grass to center -> GREEN & BOOST!\nEnemy: Follows, destroys color on step/attack, charges sword, revives in 5s\nLMB/F: Slash | Space: Dodge | E/Q: Grenade | R/Shift: Grapple Hook | WASD: Move | RMB: Move to | T: Textures | C: Clear"
+	_help_label.text = "Center patch is PERMANENT. Connect grass to center -> GREEN & BOOST!\nLMB / Left Stick: Attack | RMB: Throw Grenade | Space: Dash | E: Grapple Hook\nWASD: Move | Cursor: Aim | T: Textures | C: Clear"
 	vbox.add_child(_help_label)
 
 
@@ -114,6 +114,14 @@ func _process(delta: float) -> void:
 	if player and camera:
 		var target_cam_pos := player.global_position + camera_offset
 		camera.global_position = camera.global_position.lerp(target_cam_pos, camera_follow_speed * delta)
+
+		# Keep player aiming towards the mouse cursor on the ground
+		if DisplayServer.get_name() != "headless":
+			var vp := get_viewport()
+			if vp:
+				var ground_point = _get_ground_click_position(vp.get_mouse_position())
+				if ground_point != null:
+					player.aim_target = ground_point
 
 	_update_hud()
 
@@ -174,31 +182,49 @@ func _unhandled_input(event: InputEvent) -> void:
 
 	if event is InputEventMouseButton and event.pressed:
 		var ground_point = _get_ground_click_position(event.position)
+		var aim_dir := Vector3.ZERO
 		if ground_point != null:
-			if event.button_index == MOUSE_BUTTON_LEFT:
-				# External control: Command player to face mouse cursor and slash!
-				var slash_direction: Vector3 = ground_point - player.global_position
-				slash_direction.y = 0.0
-				player.slash(slash_direction)
-			elif event.button_index == MOUSE_BUTTON_RIGHT:
-				# External control: Command player to walk to clicked destination
+			aim_dir = (ground_point as Vector3) - player.global_position
+			aim_dir.y = 0.0
+
+		if event.button_index == MOUSE_BUTTON_LEFT:
+			# Left click: Attack towards cursor!
+			player.slash(aim_dir)
+		elif event.button_index == MOUSE_BUTTON_RIGHT:
+			# Right click: Throw grenade towards cursor!
+			player.throw_grenade(aim_dir)
+		elif event.button_index == MOUSE_BUTTON_MIDDLE:
+			# Middle click: Walk to clicked position
+			if ground_point != null:
 				player.move_to(ground_point)
-			elif event.button_index == MOUSE_BUTTON_MIDDLE:
-				# Middle click: Throw grenade towards clicked direction
-				var throw_direction: Vector3 = ground_point - player.global_position
-				throw_direction.y = 0.0
-				player.throw_grenade(throw_direction)
 
 	elif event is InputEventKey and event.pressed and not event.echo:
 		if event.keycode == KEY_SPACE:
+			# Space: Dash
 			player.dodge()
-		elif event.keycode == KEY_E or event.keycode == KEY_Q:
-			player.throw_grenade()
-		elif event.keycode == KEY_R or event.keycode == KEY_SHIFT:
-			# R or Shift: Fire grappling hook towards mouse ground point if available, or player aim
-			var vp := get_viewport()
-			var mouse_ground = _get_ground_click_position(vp.get_mouse_position()) if vp else null
-			player.grapple_hook(mouse_ground)
+		elif event.keycode == KEY_E or event.keycode == KEY_R or event.keycode == KEY_SHIFT:
+			# E / R / Shift: Grapple Hook towards cursor / aim target
+			var hook_pos: Variant = player.aim_target
+			if hook_pos == null and DisplayServer.get_name() != "headless":
+				var vp := get_viewport()
+				if vp:
+					hook_pos = _get_ground_click_position(vp.get_mouse_position())
+			player.grapple_hook(hook_pos)
+		elif event.keycode == KEY_Q:
+			# Q: Grenade throw towards aim target
+			var aim_pos: Variant = player.aim_target
+			if aim_pos == null and DisplayServer.get_name() != "headless":
+				var vp := get_viewport()
+				if vp:
+					aim_pos = _get_ground_click_position(vp.get_mouse_position())
+			var throw_dir := Vector3.ZERO
+			if aim_pos != null and aim_pos is Vector3:
+				throw_dir = (aim_pos as Vector3) - player.global_position
+				throw_dir.y = 0.0
+			player.throw_grenade(throw_dir)
+		elif event.keycode == KEY_F or event.keycode == KEY_J:
+			# F / J: Attack
+			player.slash()
 		elif event.keycode == KEY_H:
 			# Toggle hook enemy targeting boolean for live testing
 			player.hook_can_target_enemies = not player.hook_can_target_enemies
@@ -213,6 +239,16 @@ func _unhandled_input(event: InputEvent) -> void:
 				ground.enable_ground_creation = not ground.enable_ground_creation
 				if player:
 					player.enable_ground_creation = ground.enable_ground_creation
+
+	elif event is InputEventJoypadButton and event.pressed:
+		if event.button_index == JOY_BUTTON_LEFT_STICK or event.button_index == JOY_BUTTON_X:
+			player.slash()
+		elif event.button_index == JOY_BUTTON_RIGHT_SHOULDER or event.button_index == JOY_BUTTON_B:
+			player.throw_grenade()
+		elif event.button_index == JOY_BUTTON_A:
+			player.dodge()
+		elif event.button_index == JOY_BUTTON_LEFT_SHOULDER or event.button_index == JOY_BUTTON_Y:
+			player.grapple_hook()
 
 
 func _get_ground_click_position(mouse_pos: Vector2) -> Variant:

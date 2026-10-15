@@ -107,6 +107,15 @@ signal hook_finished()
 ## Slight impulse / momentum boost forward upon finishing hook pull
 @export var hook_finish_boost: float = 4.0
 
+@export_group("Aim Settings")
+## If true, player rotates to face mouse cursor or aim_target
+@export var rotate_to_cursor: bool = true
+## Speed of turning to face aim target / cursor
+@export var aim_rotation_speed: float = 24.0
+
+## Target 3D position on plane the player is aiming towards
+var aim_target: Variant = null
+
 @export_group("External Control")
 ## If true, reads default keyboard (WASD / Arrows / Space / F / J / E / Q / R / Shift) when external input is zero.
 @export var enable_keyboard_fallback: bool = true
@@ -193,6 +202,12 @@ func slash(target_direction: Vector3 = Vector3.ZERO) -> bool:
 		target_direction.y = 0.0
 		var look_basis := Basis.looking_at(target_direction.normalized(), Vector3.UP)
 		basis = look_basis.orthonormalized()
+	elif aim_target != null and aim_target is Vector3:
+		var aim_dir := (aim_target as Vector3) - global_position
+		aim_dir.y = 0.0
+		if aim_dir.length_squared() > 0.001:
+			var look_basis := Basis.looking_at(aim_dir.normalized(), Vector3.UP)
+			basis = look_basis.orthonormalized()
 
 	attack_started.emit()
 	_execute_slash()
@@ -404,6 +419,12 @@ func throw_grenade(target_direction: Vector3 = Vector3.ZERO) -> bool:
 		target_direction.y = 0.0
 		var look_basis := Basis.looking_at(target_direction.normalized(), Vector3.UP)
 		basis = look_basis.orthonormalized()
+	elif aim_target != null and aim_target is Vector3:
+		var aim_dir := (aim_target as Vector3) - global_position
+		aim_dir.y = 0.0
+		if aim_dir.length_squared() > 0.001:
+			var look_basis := Basis.looking_at(aim_dir.normalized(), Vector3.UP)
+			basis = look_basis.orthonormalized()
 
 	# Throw in the direction the player is looking at
 	var throw_dir := -basis.z
@@ -514,8 +535,12 @@ func grapple_hook(target_override_pos: Variant = null, target_direction: Vector3
 	var found_latch := false
 
 	# 1. Check if specific world destination was provided (e.g. mouse click on ground or entity)
-	if target_override_pos != null and target_override_pos is Vector3:
-		var candidate_pos: Vector3 = target_override_pos
+	var check_pos: Variant = target_override_pos
+	if check_pos == null and aim_target != null and aim_target is Vector3:
+		check_pos = aim_target
+
+	if check_pos != null and check_pos is Vector3:
+		var candidate_pos: Vector3 = check_pos
 		var dist_to_candidate := global_position.distance_to(candidate_pos)
 
 		if dist_to_candidate <= hook_max_range:
@@ -538,13 +563,16 @@ func grapple_hook(target_override_pos: Variant = null, target_direction: Vector3
 	if not found_latch and target_override_pos == null:
 		var aim_dir := target_direction
 		if aim_dir.length_squared() < 0.001:
-			var input_vec := external_input
-			if input_vec.is_zero_approx() and enable_keyboard_fallback:
-				input_vec = _read_keyboard_input()
-			if not input_vec.is_zero_approx():
-				aim_dir = Vector3(input_vec.x, 0.0, input_vec.y).normalized()
+			if aim_target != null and aim_target is Vector3:
+				aim_dir = (aim_target as Vector3) - global_position
 			else:
-				aim_dir = -basis.z
+				var input_vec := external_input
+				if input_vec.is_zero_approx() and enable_keyboard_fallback:
+					input_vec = _read_keyboard_input()
+				if not input_vec.is_zero_approx():
+					aim_dir = Vector3(input_vec.x, 0.0, input_vec.y).normalized()
+				else:
+					aim_dir = -basis.z
 
 		aim_dir.y = 0.0
 		aim_dir = aim_dir.normalized()
@@ -1064,6 +1092,26 @@ func _physics_process(delta: float) -> void:
 	var should_finish_dodge_this_frame := false
 	var should_finish_hook_this_frame := false
 
+	# Update rotation: Orient towards cursor/aim_target, or fallback to movement direction
+	if not is_hooking and not is_dodging and not is_attacking:
+		var has_aim := false
+		var target_aim: Variant = aim_target
+		if target_aim == null and rotate_to_cursor:
+			target_aim = _get_cursor_ground_position()
+
+		if rotate_to_cursor and target_aim != null and target_aim is Vector3:
+			var aim_dir: Vector3 = (target_aim as Vector3) - global_position
+			aim_dir.y = 0.0
+			if aim_dir.length_squared() > 0.04:
+				has_aim = true
+				var look_basis := Basis.looking_at(aim_dir.normalized(), Vector3.UP)
+				var weight := 1.0 if aim_rotation_speed <= 0.0 else clampf(aim_rotation_speed * delta, 0.0, 1.0)
+				basis = basis.slerp(look_basis, weight).orthonormalized()
+
+		if not has_aim and move_direction.length_squared() > 0.001:
+			var look_basis := Basis.looking_at(move_direction, Vector3.UP)
+			basis = basis.slerp(look_basis, clampf(rotation_speed * delta, 0.0, 1.0)).orthonormalized()
+
 	if is_hooking:
 		# Update target position if tracking a living enemy
 		if is_instance_valid(_hook_target_node):
@@ -1103,10 +1151,6 @@ func _physics_process(delta: float) -> void:
 			_dodge_distance_traveled += step_dist
 	elif move_direction.length_squared() > 0.001:
 		horizontal_vel = horizontal_vel.move_toward(target_vel, effective_accel * delta)
-		# Smoothly rotate to face movement direction if not currently mid-slash
-		if not is_attacking:
-			var look_basis := Basis.looking_at(move_direction, Vector3.UP)
-			basis = basis.slerp(look_basis, rotation_speed * delta).orthonormalized()
 	else:
 		horizontal_vel = horizontal_vel.move_toward(Vector3.ZERO, friction * delta)
 
@@ -1133,16 +1177,62 @@ func _physics_process(delta: float) -> void:
 		position_changed.emit(global_position)
 
 
+func _get_cursor_ground_position() -> Variant:
+	if DisplayServer.get_name() == "headless":
+		return null
+	var vp := get_viewport()
+	if not vp:
+		return null
+	var cam := vp.get_camera_3d()
+	if not cam:
+		return null
+	var mouse_pos := vp.get_mouse_position()
+	var ray_origin := cam.project_ray_origin(mouse_pos)
+	var ray_normal := cam.project_ray_normal(mouse_pos)
+	var ground_plane := Plane(Vector3.UP, global_position.y)
+	return ground_plane.intersects_ray(ray_origin, ray_normal)
+
+
 func _unhandled_input(event: InputEvent) -> void:
-	# Keyboard shortcuts fallback: Space = Dodge, F/J = Slash, E/Q = Grenade, R/Shift = Grapple
-	if enable_keyboard_fallback and event is InputEventKey and event.pressed and not event.echo:
+	if not enable_keyboard_fallback:
+		return
+
+	if event is InputEventMouseButton and event.pressed:
+		var target_pos: Variant = aim_target
+		if target_pos == null and rotate_to_cursor:
+			target_pos = _get_cursor_ground_position()
+
+		var aim_dir := Vector3.ZERO
+		if target_pos != null and target_pos is Vector3:
+			aim_dir = (target_pos as Vector3) - global_position
+			aim_dir.y = 0.0
+
+		if event.button_index == MOUSE_BUTTON_LEFT:
+			slash(aim_dir)
+		elif event.button_index == MOUSE_BUTTON_RIGHT:
+			throw_grenade(aim_dir)
+
+	elif event is InputEventKey and event.pressed and not event.echo:
 		if event.keycode == KEY_SPACE:
 			dodge()
 		elif event.keycode == KEY_F or event.keycode == KEY_J:
 			slash()
-		elif event.keycode == KEY_E or event.keycode == KEY_Q:
+		elif event.keycode == KEY_E or event.keycode == KEY_R or event.keycode == KEY_SHIFT:
+			var target_pos: Variant = aim_target
+			if target_pos == null and rotate_to_cursor:
+				target_pos = _get_cursor_ground_position()
+			grapple_hook(target_pos)
+		elif event.keycode == KEY_Q:
 			throw_grenade()
-		elif event.keycode == KEY_R or event.keycode == KEY_SHIFT:
+
+	elif event is InputEventJoypadButton and event.pressed:
+		if event.button_index == JOY_BUTTON_LEFT_STICK or event.button_index == JOY_BUTTON_X:
+			slash()
+		elif event.button_index == JOY_BUTTON_RIGHT_SHOULDER or event.button_index == JOY_BUTTON_B:
+			throw_grenade()
+		elif event.button_index == JOY_BUTTON_A:
+			dodge()
+		elif event.button_index == JOY_BUTTON_LEFT_SHOULDER or event.button_index == JOY_BUTTON_Y:
 			grapple_hook()
 
 
