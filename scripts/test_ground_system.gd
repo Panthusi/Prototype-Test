@@ -84,27 +84,42 @@ func _init() -> void:
 	assert(player.is_boosted() == true, "Player on connected slash must receive speed boost")
 
 	# --------------------------------------------------------------------------
-	# Test 4: When blue slash fades away, the buff goes away!
+	# Test 4: Disconnected slashes do NOT get removed and remain permanent!
 	# --------------------------------------------------------------------------
-	print("Test 4 - Simulating 5.1 seconds of fading for blue slash...")
+	print("Test 4 - Verifying disconnected slashes do NOT get removed after 5.1s...")
 	ground._process(5.1)
 
-	var faded_pixel_col = ground.mask_image.get_pixel(pixel_far.x, pixel_far.y)
-	print("Test 4 - Mask pixel color at blue point after 5s: ", faded_pixel_col)
-	assert(faded_pixel_col.r == 0.0, "Blue slash must completely fade away (R = 0.0)")
-
-	# User request: "but when i faded away the buff goes away"
-	assert(ground.is_boosted_at(slashed_far_point) == false, "Speed buff MUST go away when blue slash has faded")
+	var persistent_pixel_col = ground.mask_image.get_pixel(pixel_far.x, pixel_far.y)
+	print("Test 4 - Mask pixel color at blue point after 5s: ", persistent_pixel_col)
+	assert(persistent_pixel_col.r == 1.0, "Blue slash must remain permanently on ground (R = 1.0)")
+	assert(ground.is_boosted_at(slashed_far_point) == true, "Blue slash must still provide speed boost")
 
 	player.global_position = slashed_far_point
 	player._physics_process(0.016)
-	print("Test 4 - Player on faded ground is_boosted: ", player.is_boosted(), " Effective speed: ", player.get_effective_max_speed())
-	assert(player.is_boosted() == false, "Player must NOT be boosted once blue ground has faded away")
-	assert(is_equal_approx(player.get_effective_max_speed(), player.speed), "Player speed must return to base speed")
+	print("Test 4 - Player on persistent blue ground is_boosted: ", player.is_boosted(), " Effective speed: ", player.get_effective_max_speed())
+	assert(player.is_boosted() == true, "Player must remain boosted on persistent blue ground")
 
 	# Center patch and connected green remain intact and boosted!
 	assert(ground.is_boosted_at(Vector3(0, 0, 0)) == true, "Center patch must stay permanent forever")
 	assert(ground.is_boosted_at(connected_point) == true, "Connected green trail must stay intact and boosted")
 
-	print("--- ALL BLUE / GREEN BOOST TESTS PASSED SUCCESSFULLY! ---")
+	# --------------------------------------------------------------------------
+	# Test 5: enable_ground_creation boolean toggles ground painting
+	# --------------------------------------------------------------------------
+	print("Test 5 - Testing enable_ground_creation boolean...")
+	var test_creation_point = Vector3(-18, 0, -18)
+	var test_slash_center = test_creation_point + Vector3(0, 0, -2.0)
+	assert(ground.is_boosted_at(test_slash_center) == false, "Test creation point should not be boosted initially")
+
+	# Disable ground creation
+	ground.enable_ground_creation = false
+	ground.paint_slash(test_creation_point, Vector3(0, 0, -1), 0.8, 4.0, 135.0)
+	assert(ground.is_boosted_at(test_slash_center) == false, "Slash must NOT be created when enable_ground_creation is false")
+
+	# Re-enable ground creation
+	ground.enable_ground_creation = true
+	ground.paint_slash(test_creation_point, Vector3(0, 0, -1), 0.8, 4.0, 135.0)
+	assert(ground.is_boosted_at(test_slash_center) == true, "Slash MUST be created when enable_ground_creation is true")
+
+	print("--- ALL TESTS (PERMANENT SLASHES & CREATION TOGGLE) PASSED SUCCESSFULLY! ---")
 	quit(0)

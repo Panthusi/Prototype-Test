@@ -28,6 +28,8 @@ signal boosted_status_changed(is_boosted: bool, factor: float)
 @export var ground_boost_accel_multiplier: float = 1.5
 ## Optional reference to Ground node (auto-found if not set)
 @export var ground: Node = null
+## Enables or disables creating marks/slashes on the ground during attacks
+@export var enable_ground_creation: bool = true
 
 @export_group("Attack Settings")
 ## Damage dealt by the slash attack
@@ -297,6 +299,8 @@ func _find_ground() -> void:
 
 
 func _paint_ground_slash(forward_dir: Vector3) -> void:
+	if not enable_ground_creation:
+		return
 	if not ground:
 		_find_ground()
 	if ground and ground.has_method("paint_slash"):

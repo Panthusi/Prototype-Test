@@ -54,7 +54,7 @@ func _setup_hud() -> void:
 
 	_help_label = Label.new()
 	_help_label.add_theme_font_size_override("font_size", 12)
-	_help_label.text = "Center patch is PERMANENT.\nConnect slashes to center -> turn GREEN & give SPEED BOOST!\nDisconnected slashes fade away in 5s.\nLMB / F : Slash | WASD : Move | T : Textures | C : Clear Slashes"
+	_help_label.text = "Center patch is PERMANENT.\nConnect slashes to center -> turn GREEN & give SPEED BOOST!\nDisconnected slashes are PERMANENT blue slashes.\nLMB / F : Slash | WASD : Move | T : Textures | C : Clear Slashes | G : Toggle Ground Creation"
 	vbox.add_child(_help_label)
 
 
@@ -73,7 +73,9 @@ func _update_hud() -> void:
 
 	var spd := player.get_speed()
 	var is_boosted := player.is_boosted()
-	var mode_str := "2 Textures (Active)" if (ground and ground.use_texture_base) else "Colors (Hard Corners)"
+	var creation_str := "ON" if (ground and ground.enable_ground_creation) else "OFF"
+	var base_mode := "2 Textures (Active)" if (ground and ground.use_texture_base) else "Colors (Hard Corners)"
+	var mode_str := "%s | Ground Creation: %s" % [base_mode, creation_str]
 
 	var ground_type := 0
 	if ground and ground.has_method("get_ground_type_at"):
@@ -84,7 +86,7 @@ func _update_hud() -> void:
 			_status_label.text = "Mode: %s\nSpeed: %.1f m/s  [ CONNECTED GREEN - PERMANENT BOOST! ]" % [mode_str, spd]
 			_status_label.modulate = Color(0.15, 0.95, 0.35)
 		else:
-			_status_label.text = "Mode: %s\nSpeed: %.1f m/s  [ BLUE SLASH - BOOST ACTIVE! (FADING) ]" % [mode_str, spd]
+			_status_label.text = "Mode: %s\nSpeed: %.1f m/s  [ BLUE SLASH - BOOST ACTIVE! ]" % [mode_str, spd]
 			_status_label.modulate = Color(0.12, 0.82, 1.0)
 	else:
 		_status_label.text = "Mode: %s\nSpeed: %.1f m/s  (Normal)" % [mode_str, spd]
@@ -116,6 +118,11 @@ func _unhandled_input(event: InputEvent) -> void:
 		elif event.keycode == KEY_C:
 			if ground:
 				ground.clear_mask()
+		elif event.keycode == KEY_G:
+			if ground:
+				ground.enable_ground_creation = not ground.enable_ground_creation
+				if player:
+					player.enable_ground_creation = ground.enable_ground_creation
 
 
 func _get_ground_click_position(mouse_pos: Vector2) -> Variant:

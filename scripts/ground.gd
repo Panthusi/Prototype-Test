@@ -15,7 +15,10 @@ signal connectivity_changed(connected_cells_count: int)
 @export var ground_offset: Vector2 = Vector2(0.0, 0.0)
 ## Size of the permanent center patch with hard corners (XZ meters)
 @export var center_patch_size: Vector2 = Vector2(6.0, 6.0)
-## Seconds before an unconnected slash completely fades away
+@export_group("Ground Creation")
+## When enabled, slashes and trails are created on the ground. When disabled, ground creation is ignored.
+@export var enable_ground_creation: bool = true
+## Deprecated / unused: slashes no longer fade or get removed when disconnected
 @export var fade_duration: float = 5.0
 
 @export_group("Colors")
@@ -119,53 +122,9 @@ func _ready() -> void:
 	_setup_material()
 
 
-func _process(delta: float) -> void:
-	if _active_cells.is_empty():
-		return
-
-	var to_remove: Array[int] = []
-	var needs_texture_update := false
-	var recheck_connectivity := false
-
-	# Update active cells (timers and fading)
-	for idx in _active_cells.keys():
-		var px := int(idx) % mask_resolution
-		var py := int(float(idx) / float(mask_resolution))
-
-		if _cell_connected[idx] == 1:
-			# Connected to center: Stays energised (GREEN) and permanent as long as connected
-			_cell_timers[idx] = fade_duration
-			# Ensure pixel is green in mask (G = 1.0)
-			var cur_col := mask_image.get_pixel(px, py)
-			if cur_col.g < 0.99 or cur_col.r > 0.01:
-				mask_image.set_pixel(px, py, Color(0.0, 1.0, 0.0, 1.0))
-				needs_texture_update = true
-			continue
-
-		# Disconnected from center: Counts down over fade_duration (5.0s)
-		_cell_timers[idx] -= delta
-		needs_texture_update = true
-
-		if _cell_timers[idx] <= 0.0:
-			_cell_timers[idx] = 0.0
-			to_remove.append(idx)
-			# Cleared to base ground
-			mask_image.set_pixel(px, py, Color(0.0, 0.0, 0.0, 1.0))
-			recheck_connectivity = true
-		else:
-			# Fading disconnected slash (R = timer ratio, G = 0.0)
-			var fade_ratio: float = _cell_timers[idx] / fade_duration
-			mask_image.set_pixel(px, py, Color(fade_ratio, 0.0, 0.0, 1.0))
-
-	for idx in to_remove:
-		_active_cells.erase(idx)
-
-	if recheck_connectivity:
-		_recalculate_connectivity()
-
-	if needs_texture_update:
-		mask_texture.update(mask_image)
-		mask_updated.emit()
+func _process(_delta: float) -> void:
+	# Disconnected slashes are no longer removed; they stay permanent on the ground.
+	pass
 
 
 # ==============================================================================
@@ -324,8 +283,10 @@ func get_mask_value(world_pos: Vector3) -> float:
 
 ## Paint a crescent slash on the ground.
 ## Slashes connected to the center patch turn GREEN and stay permanent.
-## Unconnected slashes appear cyan and fade away over 5 seconds.
+## Unconnected slashes appear cyan and remain permanent on the ground.
 func paint_slash(origin: Vector3, forward: Vector3, min_r: float = 0.8, max_r: float = 4.2, arc_deg: float = 135.0, _strength: float = 1.0) -> void:
+	if not enable_ground_creation:
+		return
 	if not mask_image or not mask_texture:
 		return
 
@@ -451,9 +412,8 @@ func _render_active_cells() -> void:
 			# Connected to center: TURN GREEN!
 			mask_image.set_pixel(px, py, Color(0.0, 1.0, 0.0, 1.0))
 		else:
-			# Disconnected: cyan slash with remaining fade timer
-			var fade_ratio: float = _cell_timers[idx] / fade_duration
-			mask_image.set_pixel(px, py, Color(fade_ratio, 0.0, 0.0, 1.0))
+			# Disconnected: permanent cyan slash (full intensity, no fading)
+			mask_image.set_pixel(px, py, Color(1.0, 0.0, 0.0, 1.0))
 
 
 ## Clear all slashed areas outside the permanent center patch
