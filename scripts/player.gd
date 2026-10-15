@@ -80,6 +80,8 @@ signal hook_finished()
 @export var grenade_cooldown: float = 0.8
 ## Damage dealt by the grenade explosion
 @export var grenade_damage: float = 50.0
+## Maximum throw distance from the player (meters); cursor target is clamped to this radius
+@export var grenade_max_throw_distance: float = 15.0
 ## Enables or disables creating grass on the ground during grenade explosion
 @export var enable_grenade_ground_creation: bool = true
 
@@ -405,7 +407,7 @@ func _finish_dodge() -> void:
 	)
 
 
-## Throw a grenade in the direction the player is looking at.
+## Throw a grenade towards the mouse cursor, clamped to grenade_max_throw_distance.
 ## If target_direction is provided, the player orients towards it before throwing.
 ## Returns true if the grenade was successfully thrown.
 func throw_grenade(target_direction: Vector3 = Vector3.ZERO) -> bool:
@@ -414,20 +416,36 @@ func throw_grenade(target_direction: Vector3 = Vector3.ZERO) -> bool:
 
 	_can_throw_grenade = false
 
-	# If a specific throw direction was requested, face that direction
-	if target_direction.length_squared() > 0.001:
-		target_direction.y = 0.0
-		var look_basis := Basis.looking_at(target_direction.normalized(), Vector3.UP)
-		basis = look_basis.orthonormalized()
-	elif aim_target != null and aim_target is Vector3:
-		var aim_dir := (aim_target as Vector3) - global_position
-		aim_dir.y = 0.0
-		if aim_dir.length_squared() > 0.001:
-			var look_basis := Basis.looking_at(aim_dir.normalized(), Vector3.UP)
-			basis = look_basis.orthonormalized()
+	# --- Resolve the world-space target position ---
+	# Priority: explicit target_direction arg > aim_target > cursor ground position
+	var throw_target_pos: Variant = null
 
-	# Throw in the direction the player is looking at
-	var throw_dir := -basis.z
+	if target_direction.length_squared() > 0.001:
+		# target_direction is the raw offset from player to the click position (not normalized).
+		# Its length equals the actual distance to the mouse cursor, so reconstruct the world position directly.
+		var flat_offset := Vector3(target_direction.x, 0.0, target_direction.z)
+		throw_target_pos = global_position + flat_offset
+	elif aim_target != null and aim_target is Vector3:
+		throw_target_pos = aim_target as Vector3
+	elif enable_keyboard_fallback:
+		throw_target_pos = _get_cursor_ground_position()
+
+	# Clamp target to max throw distance
+	if throw_target_pos != null and throw_target_pos is Vector3:
+		var target_3d := throw_target_pos as Vector3
+		var flat_offset := Vector3(target_3d.x - global_position.x, 0.0, target_3d.z - global_position.z)
+		var dist := flat_offset.length()
+		if dist > grenade_max_throw_distance:
+			flat_offset = flat_offset.normalized() * grenade_max_throw_distance
+			throw_target_pos = Vector3(global_position.x + flat_offset.x, 0.0, global_position.z + flat_offset.z)
+
+	# Face towards throw target
+	if throw_target_pos != null and throw_target_pos is Vector3:
+		var face_dir := (throw_target_pos as Vector3) - global_position
+		face_dir.y = 0.0
+		if face_dir.length_squared() > 0.001:
+			var look_basis := Basis.looking_at(face_dir.normalized(), Vector3.UP)
+			basis = look_basis.orthonormalized()
 
 	if not grenade_scene:
 		if ResourceLoader.exists("res://scenes/grenade.tscn"):
@@ -465,11 +483,15 @@ func throw_grenade(target_direction: Vector3 = Vector3.ZERO) -> bool:
 		add_sibling(grenade)
 
 	# Spawn grenade slightly in front of player at chest height
+	var throw_dir := -basis.z
 	var spawn_pos := global_position + Vector3(0.0, 1.1, 0.0) + throw_dir * 0.5
 	grenade.global_position = spawn_pos
 
-	# Launch grenade with ballistic arc
-	grenade.launch(throw_dir, grenade_throw_speed, grenade_upward_speed)
+	# Launch grenade: arc to target if we have a position, otherwise direction-based
+	if throw_target_pos != null and throw_target_pos is Vector3:
+		grenade.launch_to_target(throw_target_pos as Vector3)
+	else:
+		grenade.launch(throw_dir, grenade_throw_speed, grenade_upward_speed)
 
 	grenade_thrown.emit(grenade)
 	_play_throw_feedback()

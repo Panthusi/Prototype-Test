@@ -59,6 +59,39 @@ func launch(direction: Vector3, custom_forward_speed: float = -1.0, custom_upwar
 	_tumble_axis = side.rotated(horiz_dir, randf_range(-0.4, 0.4)).normalized()
 
 
+## Launch the grenade so it lands exactly at target_pos using a ballistic arc.
+## Solves for the required horizontal speed given the fixed upward_speed and throw_gravity.
+func launch_to_target(target_pos: Vector3) -> void:
+	var spawn_pos := global_position
+	var diff := Vector3(target_pos.x - spawn_pos.x, 0.0, target_pos.z - spawn_pos.z)
+	var horiz_dist := diff.length()
+
+	var horiz_dir := diff.normalized() if horiz_dist > 0.05 else Vector3(0.0, 0.0, -1.0)
+
+	# Ballistic time-of-flight: solve y(t) = spawn_y + u*t - 0.5*g*t^2 = 0 (ground plane)
+	# => t = (u + sqrt(u^2 + 2*g*spawn_y)) / g
+	var u := upward_speed
+	var g := throw_gravity
+	var spawn_y := spawn_pos.y  # height above ground (ground is y=0)
+	var discriminant := u * u + 2.0 * g * spawn_y
+	var flight_time: float
+	if discriminant >= 0.0:
+		flight_time = (u + sqrt(discriminant)) / g
+	else:
+		# Fallback: symmetric arc time
+		flight_time = 2.0 * u / g
+
+	# Clamp so grenade doesn't overshoot the fuse time
+	flight_time = minf(flight_time, max_fuse_time * 0.95)
+
+	var h_speed := horiz_dist / maxf(flight_time, 0.001)
+	velocity = horiz_dir * h_speed + Vector3.UP * u
+
+	# Choose tumble axis perpendicular to throw direction
+	var side := horiz_dir.cross(Vector3.UP).normalized()
+	_tumble_axis = side.rotated(horiz_dir, randf_range(-0.4, 0.4)).normalized()
+
+
 func _physics_process(delta: float) -> void:
 	if _is_exploding:
 		return
