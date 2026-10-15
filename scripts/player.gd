@@ -9,6 +9,8 @@ signal attack_finished()
 signal attack_hit(target: Node3D)
 signal boosted_status_changed(is_boosted: bool, factor: float)
 signal grenade_thrown(grenade: Node3D)
+signal dodge_started(direction: Vector3)
+signal dodge_finished()
 
 @export_group("Movement Settings")
 ## Maximum walking speed on the plane
@@ -66,8 +68,18 @@ signal grenade_thrown(grenade: Node3D)
 ## Enables or disables creating grass on the ground during grenade explosion
 @export var enable_grenade_ground_creation: bool = true
 
+@export_group("Dodge Settings")
+## Base distance (in meters) covered by the dodge at normal movement speed
+@export var base_dodge_distance: float = 2.2
+## Duration of the dodge action (seconds)
+@export var dodge_duration: float = 0.16
+## Minimum delay between consecutive dodges (seconds)
+@export var dodge_cooldown: float = 0.35
+## Multiplier applied to effective movement speed during dodge (compat)
+@export var dodge_speed_multiplier: float = 2.2
+
 @export_group("External Control")
-## If true, reads default keyboard (WASD / Arrows / F / J / E / Q) when external input is zero.
+## If true, reads default keyboard (WASD / Arrows / Space / F / J / E / Q) when external input is zero.
 @export var enable_keyboard_fallback: bool = true
 
 ## External directional input vector (X = right/left, Y = down/up).
@@ -84,6 +96,14 @@ var _can_attack: bool = true
 
 ## Grenade state
 var _can_throw_grenade: bool = true
+
+## Dodge state
+var is_dodging: bool = false
+var _can_dodge: bool = true
+var _dodge_direction: Vector3 = Vector3.ZERO
+var _current_dodge_speed: float = 0.0
+var _dodge_distance_target: float = 0.0
+var _dodge_distance_traveled: float = 0.0
 
 ## Ground boost tracking
 var current_boost_factor: float = 0.0
@@ -113,7 +133,7 @@ func _ready() -> void:
 ## If target_direction is provided, the player orients towards it before slashing.
 ## Returns true if the attack successfully initiated.
 func slash(target_direction: Vector3 = Vector3.ZERO) -> bool:
-	if not _can_attack or is_attacking:
+	if not _can_attack or is_attacking or is_dodging:
 		return false
 
 	is_attacking = true
@@ -148,6 +168,8 @@ func move_to(target_pos: Vector3, arrival_threshold: float = 0.2) -> void:
 func stop() -> void:
 	external_input = Vector2.ZERO
 	target_destination = null
+	if is_dodging:
+		_finish_dodge()
 	velocity.x = 0.0
 	velocity.z = 0.0
 
@@ -171,14 +193,104 @@ func is_moving() -> bool:
 
 ## Returns true if the player is currently able to perform an attack.
 func can_attack() -> bool:
-	return _can_attack and not is_attacking
+	return _can_attack and not is_attacking and not is_dodging
+
+
+## Returns true if the player is currently able to perform a dodge.
+func can_dodge() -> bool:
+	return _can_dodge and not is_dodging
+
+
+## Returns effective dodge distance (meters).
+## Base distance at normal speed (6.0 m/s); moves further when faster (ground boost / higher speed stat).
+func get_dodge_distance() -> float:
+	var speed_ratio := get_effective_max_speed() / 6.0
+	return base_dodge_distance * speed_ratio
+
+
+## Returns current dodge speed so that dodge covers get_dodge_distance() in dodge_duration.
+func get_dodge_speed() -> float:
+	return get_dodge_distance() / maxf(dodge_duration, 0.001)
+
+
+## Execute a quick dodge dash.
+## If target_direction is provided, dodges in that direction.
+## Otherwise dodges in the current movement input direction, or facing direction if stationary.
+## Returns true if the dodge successfully initiated.
+func dodge(target_direction: Vector3 = Vector3.ZERO) -> bool:
+	if not _can_dodge or is_dodging:
+		return false
+
+	_can_dodge = false
+	is_dodging = true
+
+	# Interrupt active attack if mid-slash
+	if is_attacking:
+		is_attacking = false
+		if _slash_tween:
+			_slash_tween.kill()
+		if slash_pivot:
+			slash_pivot.visible = false
+		attack_finished.emit()
+
+	# Determine dodge direction
+	var dodge_dir := _determine_dodge_direction(target_direction)
+	_dodge_direction = dodge_dir
+
+	# Distance and speed scaling: faster speed = moves further
+	_dodge_distance_target = get_dodge_distance()
+	_dodge_distance_traveled = 0.0
+	_current_dodge_speed = get_dodge_speed()
+
+	# Snap facing rotation to dodge direction
+	if _dodge_direction.length_squared() > 0.001:
+		var look_basis := Basis.looking_at(_dodge_direction, Vector3.UP)
+		basis = look_basis.orthonormalized()
+
+	# Apply initial dodge velocity
+	velocity.x = _dodge_direction.x * _current_dodge_speed
+	velocity.z = _dodge_direction.z * _current_dodge_speed
+
+	dodge_started.emit(_dodge_direction)
+	_play_dodge_feedback()
+
+	return true
+
+
+func _finish_dodge() -> void:
+	if not is_dodging:
+		return
+	is_dodging = false
+
+	# Eliminate lingering momentum so player doesn't slip/slide after dodge
+	var input_vec := external_input
+	if input_vec.is_zero_approx() and enable_keyboard_fallback:
+		input_vec = _read_keyboard_input()
+
+	if not input_vec.is_zero_approx():
+		# Instantly resume standard running speed in input direction (no sliding deceleration)
+		var move_dir := Vector3(input_vec.x, 0.0, input_vec.y).normalized()
+		var cur_speed := get_effective_max_speed()
+		velocity.x = move_dir.x * cur_speed
+		velocity.z = move_dir.z * cur_speed
+	else:
+		# Instantly stop dead - no slipping!
+		velocity.x = 0.0
+		velocity.z = 0.0
+
+	dodge_finished.emit()
+
+	# Cooldown timer begins after dodge finishes
+	get_tree().create_timer(dodge_cooldown).timeout.connect(func():
+		_can_dodge = true
+	)
 
 
 ## Throw a grenade in the direction the player is looking at.
 ## If target_direction is provided, the player orients towards it before throwing.
 ## Returns true if the grenade was successfully thrown.
 func throw_grenade(target_direction: Vector3 = Vector3.ZERO) -> bool:
-	if not _can_throw_grenade:
+	if not _can_throw_grenade or is_dodging:
 		return false
 
 	_can_throw_grenade = false
@@ -247,7 +359,7 @@ func throw_grenade(target_direction: Vector3 = Vector3.ZERO) -> bool:
 
 ## Returns true if the player is currently able to throw a grenade.
 func can_throw_grenade() -> bool:
-	return _can_throw_grenade
+	return _can_throw_grenade and not is_dodging
 
 
 func _play_throw_feedback() -> void:
@@ -256,6 +368,55 @@ func _play_throw_feedback() -> void:
 		var tween := create_tween()
 		tween.tween_property(_visor_material, "albedo_color", Color(0.25, 0.95, 0.4), 0.08)
 		tween.tween_property(_visor_material, "albedo_color", orig_color, 0.12)
+
+
+func _play_dodge_feedback() -> void:
+	if visor and _visor_material:
+		var orig_color: Color = _visor_material.albedo_color
+		var tween := create_tween()
+		tween.tween_property(_visor_material, "albedo_color", Color(1.0, 0.9, 0.2), 0.06)
+		tween.tween_property(_visor_material, "albedo_color", orig_color, dodge_duration - 0.06)
+
+	var body_mesh := get_node_or_null("MeshInstance3D") as MeshInstance3D
+	if body_mesh:
+		var mesh_tween := create_tween()
+		mesh_tween.tween_property(body_mesh, "scale", Vector3(0.9, 0.75, 1.15), dodge_duration * 0.4).set_trans(Tween.TRANS_QUAD).set_ease(Tween.EASE_OUT)
+		mesh_tween.tween_property(body_mesh, "scale", Vector3.ONE, dodge_duration * 0.6).set_trans(Tween.TRANS_BACK).set_ease(Tween.EASE_OUT)
+
+
+func _determine_dodge_direction(requested_dir: Vector3 = Vector3.ZERO) -> Vector3:
+	if requested_dir.length_squared() > 0.001:
+		requested_dir.y = 0.0
+		return requested_dir.normalized()
+
+	# Movement input vector (keyboard or external)
+	var input_vec := external_input
+	if input_vec.is_zero_approx() and enable_keyboard_fallback:
+		input_vec = _read_keyboard_input()
+
+	if not input_vec.is_zero_approx():
+		var dir := Vector3(input_vec.x, 0.0, input_vec.y)
+		return dir.normalized()
+
+	# Target destination if actively walking to a point
+	if target_destination != null:
+		var diff: Vector3 = target_destination - global_position
+		diff.y = 0.0
+		if diff.length_squared() > 0.01:
+			return diff.normalized()
+
+	# Current horizontal velocity direction if moving
+	var horiz_vel := Vector3(velocity.x, 0.0, velocity.z)
+	if horiz_vel.length_squared() > 0.1:
+		return horiz_vel.normalized()
+
+	# Fallback to player facing direction
+	var facing := -basis.z
+	facing.y = 0.0
+	if facing.length_squared() > 0.001:
+		return facing.normalized()
+
+	return Vector3.FORWARD
 
 
 # ==============================================================================
@@ -513,8 +674,21 @@ func _physics_process(delta: float) -> void:
 
 	var horizontal_vel := Vector3(velocity.x, 0.0, velocity.z)
 	var target_vel := move_direction * effective_speed
+	var should_finish_dodge_this_frame := false
 
-	if move_direction.length_squared() > 0.001:
+	if is_dodging:
+		var step_dist := _current_dodge_speed * delta
+		var remaining_dist := _dodge_distance_target - _dodge_distance_traveled
+		if step_dist >= remaining_dist:
+			# Final physics step: travel the exact remaining distance to hit target distance
+			var final_speed := remaining_dist / maxf(delta, 0.0001)
+			horizontal_vel = _dodge_direction * final_speed
+			_dodge_distance_traveled = _dodge_distance_target
+			should_finish_dodge_this_frame = true
+		else:
+			horizontal_vel = _dodge_direction * _current_dodge_speed
+			_dodge_distance_traveled += step_dist
+	elif move_direction.length_squared() > 0.001:
 		horizontal_vel = horizontal_vel.move_toward(target_vel, effective_accel * delta)
 		# Smoothly rotate to face movement direction if not currently mid-slash
 		if not is_attacking:
@@ -530,15 +704,21 @@ func _physics_process(delta: float) -> void:
 	var prev_pos := global_position
 	move_and_slide()
 
+	# If dodge reached its target distance this frame, finish immediately (stops slipping)
+	if should_finish_dodge_this_frame:
+		_finish_dodge()
+
 	# 6. Emit position change if moved
 	if global_position != prev_pos:
 		position_changed.emit(global_position)
 
 
 func _unhandled_input(event: InputEvent) -> void:
-	# Keyboard attack shortcut fallback (F or J) & Grenade throw (E or Q)
+	# Keyboard shortcuts fallback: Space = Dodge, F/J = Slash, E/Q = Grenade
 	if enable_keyboard_fallback and event is InputEventKey and event.pressed and not event.echo:
-		if event.keycode == KEY_F or event.keycode == KEY_J:
+		if event.keycode == KEY_SPACE:
+			dodge()
+		elif event.keycode == KEY_F or event.keycode == KEY_J:
 			slash()
 		elif event.keycode == KEY_E or event.keycode == KEY_Q:
 			throw_grenade()

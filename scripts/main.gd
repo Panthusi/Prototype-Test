@@ -54,7 +54,7 @@ func _setup_hud() -> void:
 
 	_help_label = Label.new()
 	_help_label.add_theme_font_size_override("font_size", 12)
-	_help_label.text = "Center patch is PERMANENT.\nConnect grass/slashes to center -> turn GREEN & give SPEED BOOST!\nLMB / F : Slash | E / Q : Throw Grenade | WASD : Move | RMB : Move to\nT : Textures | C : Clear Slashes | G : Toggle Ground Creation"
+	_help_label.text = "Center patch is PERMANENT.\nConnect grass/slashes to center -> turn GREEN & give SPEED BOOST!\nLMB / F : Slash | Space : Dodge | E / Q : Throw Grenade | WASD : Move | RMB : Move to\nT : Textures | C : Clear Slashes | G : Toggle Ground Creation"
 	vbox.add_child(_help_label)
 
 
@@ -81,7 +81,10 @@ func _update_hud() -> void:
 	if ground and ground.has_method("get_ground_type_at"):
 		ground_type = ground.get_ground_type_at(player.global_position)
 
-	if is_boosted:
+	if player.is_dodging:
+		_status_label.text = "Mode: %s\nSpeed: %.1f m/s  [ DODGING! ]" % [mode_str, spd]
+		_status_label.modulate = Color(1.0, 0.9, 0.2)
+	elif is_boosted:
 		if ground_type == 2:
 			_status_label.text = "Mode: %s\nSpeed: %.1f m/s  [ CONNECTED GREEN - PERMANENT BOOST! ]" % [mode_str, spd]
 			_status_label.modulate = Color(0.15, 0.95, 0.35)
@@ -116,7 +119,7 @@ func _unhandled_input(event: InputEvent) -> void:
 
 	elif event is InputEventKey and event.pressed and not event.echo:
 		if event.keycode == KEY_SPACE:
-			player.stop()
+			player.dodge()
 		elif event.keycode == KEY_E or event.keycode == KEY_Q:
 			player.throw_grenade()
 		elif event.keycode == KEY_T:
